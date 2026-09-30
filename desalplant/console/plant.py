@@ -1,6 +1,7 @@
 """Wiring of the subsystems behind the console actions."""
 
-from typing import Any
+from threading import RLock
+from typing import Any, Callable
 
 from ..audit.event import Event
 from ..audit.recorder import Recorder
@@ -43,15 +44,25 @@ PRODUCE_LEVEL = 68.0
 MAINTENANCE_EFFICIENCY = 0.8
 MAINTENANCE_DRAW = 0.1
 LAST_STAGE_READINGS = {"s3": 5.0}
+ChangePublisher = Callable[[Event, Any], Any]
 
 
 class Plant:
     """Every subsystem of the line, wired together behind the console."""
 
-    def __init__(self, store: Store, clock: LogicalClock, recorder: Recorder) -> None:
+    def __init__(
+        self,
+        store: Store,
+        clock: LogicalClock,
+        recorder: Recorder,
+        change_publisher: ChangePublisher | None = None,
+    ) -> None:
         self.store = store
         self.clock = clock
         self.recorder = recorder
+        self.point_lock = RLock()
+        self._snapshot_publisher = None
+        self._change_publisher = change_publisher
         self.state = PlantState.IDLE
 
         self.feed = Feed()
@@ -79,67 +90,105 @@ class Plant:
 
     # ------------------------------------------------------------- lifecycle
 
+    def _record_change(self, action: Callable[[], None], kind: str, detail: str) -> Event:
+        """Mutate, audit and publish a point change as one critical section."""
+        with self.point_lock:
+            action()
+            event = self.recorder.log(kind, detail)
+            snapshot = (
+                self._snapshot_publisher(self) if self._snapshot_publisher is not None else None
+            )
+            if self._change_publisher is not None and snapshot is not None:
+                self._change_publisher(event, snapshot)
+            return event
+
+    def set_change_publishers(
+        self,
+        snapshot_publisher: Callable[["Plant"], Any],
+        change_publisher: ChangePublisher,
+    ) -> None:
+        """Configure snapshot and fan-out hooks used inside a change critical section."""
+        self._snapshot_publisher = snapshot_publisher
+        self._change_publisher = change_publisher
+
     def start(self) -> Event:
         """Bring the line up: intake, media, dosing, flow and pressure."""
-        self.clock.advance()
-        self.gate.open_gate()
-        self.media.backwash()
-        self.media.require_ready()
-        self.intake_pump.start()
-        self.feed.start()
-        self.doser.start(self.feed)
-        self.hp_pump.start()
-        ramp(self.hp_pump, self.membrane, RAMP_TARGET)
-        ramp_pressure(self.hp_pump, self.valve, RAMP_TARGET)
-        self.state = PlantState.RUNNING
-        self.store.put(keys.PLANT_STATE, self.state.value)
-        self.store.put(keys.PLANT_STARTED_AT, self.clock.tick)
-        return self.recorder.log("start", "line started")
+
+        def action() -> None:
+            self.clock.advance()
+            self.gate.open_gate()
+            self.media.backwash()
+            self.media.require_ready()
+            self.intake_pump.start()
+            self.feed.start()
+            self.doser.start(self.feed)
+            self.hp_pump.start()
+            ramp(self.hp_pump, self.membrane, RAMP_TARGET)
+            ramp_pressure(self.hp_pump, self.valve, RAMP_TARGET)
+            self.state = PlantState.RUNNING
+            self.store.put(keys.PLANT_STATE, self.state.value)
+            self.store.put(keys.PLANT_STARTED_AT, self.clock.tick)
+
+        return self._record_change(action, "start", "line started")
 
     def produce(self) -> Event:
         """Produce permeate and hand it to the tank when the quality allows."""
-        self.clock.advance()
-        check = FlowCheck()
-        check.measure(self.membrane)
-        self.permeate.update_conductivity(PRODUCE_CONDUCTIVITY)
-        self.product.fill(self.permeate)
-        self.output.check(self.hp_pump.efficiency, PRODUCE_POWER)
-        self.level.update(PRODUCE_LEVEL)
-        return self.recorder.log("produce", "permeate produced")
+
+        def action() -> None:
+            self.clock.advance()
+            check = FlowCheck()
+            check.measure(self.membrane)
+            self.permeate.update_conductivity(PRODUCE_CONDUCTIVITY)
+            self.product.fill(self.permeate)
+            self.output.check(self.hp_pump.efficiency, PRODUCE_POWER)
+            self.level.update(PRODUCE_LEVEL)
+
+        return self._record_change(action, "produce", "permeate produced")
 
     def shutdown(self) -> Event:
         """Stop the line after stopping dosing, flushing and rinsing."""
-        self.clock.advance()
-        self.doser.stop(self.feed)
-        stop(self.hp_pump, self.flusher)
-        self.intake_pump.shutdown(self.rack)
-        self.state = PlantState.IDLE
-        self.store.put(keys.PLANT_STATE, self.state.value)
-        self.store.put(keys.PLANT_STOPPED_AT, self.clock.tick)
-        return self.recorder.log("shutdown", "line stopped")
+
+        def action() -> None:
+            self.clock.advance()
+            self.doser.stop(self.feed)
+            stop(self.hp_pump, self.flusher)
+            self.intake_pump.shutdown(self.rack)
+            self.state = PlantState.IDLE
+            self.store.put(keys.PLANT_STATE, self.state.value)
+            self.store.put(keys.PLANT_STOPPED_AT, self.clock.tick)
+
+        return self._record_change(action, "shutdown", "line stopped")
 
     def switch_tank(self) -> Event:
         """Move production to the standby tank."""
-        self.clock.advance()
-        active = handoff(self.tank_set, self.hp_pump)
-        return self.recorder.log("switch", f"product tank switched to {active}")
+
+        def action() -> None:
+            self.clock.advance()
+            handoff(self.tank_set, self.hp_pump)
+
+        return self._record_change(
+            action, "switch", f"product tank switched to {self.tank_set.standby}"
+        )
 
     def maintain(self) -> Event:
         """Run the maintenance routine and record it."""
-        self.clock.advance()
-        self.array.regroup(3)
-        self.pump_differential()
-        self.hp_pump.recalibrate(MAINTENANCE_EFFICIENCY)
-        self.output.check(self.hp_pump.efficiency, PRODUCE_POWER)
-        self.recovery.raise_alarm()
-        self.valve.set_emergency()
-        from ..brine.recovery import recover_alarm
 
-        recover_alarm(self.valve, self.recovery)
-        self.chem_tank.draw(MAINTENANCE_DRAW)
-        self.rinse.run()
-        self.store.put(keys.PLANT_MAINTAINED_AT, self.clock.tick)
-        return self.recorder.log("maintain", "maintenance completed")
+        def action() -> None:
+            self.clock.advance()
+            self.array.regroup(3)
+            self.pump_differential()
+            self.hp_pump.recalibrate(MAINTENANCE_EFFICIENCY)
+            self.output.check(self.hp_pump.efficiency, PRODUCE_POWER)
+            self.recovery.raise_alarm()
+            self.valve.set_emergency()
+            from ..brine.recovery import recover_alarm
+
+            recover_alarm(self.valve, self.recovery)
+            self.chem_tank.draw(MAINTENANCE_DRAW)
+            self.rinse.run()
+            self.store.put(keys.PLANT_MAINTAINED_AT, self.clock.tick)
+
+        return self._record_change(action, "maintain", "maintenance completed")
 
     def pump_differential(self) -> float:
         """Pressure differential over the array's final stage."""
@@ -210,6 +259,14 @@ class Plant:
     def events(self, limit: int = 0) -> tuple[Event, ...]:
         """Newest-first audit events."""
         return self.recorder.events(limit)
+
+    def audit_logs(self, limit: int = 100) -> tuple[Event, ...]:
+        """Newest-first infrastructure audit events."""
+        return self.recorder.audit_logs(limit)
+
+    def audit_log_count(self) -> int:
+        """Number of infrastructure audit events."""
+        return self.recorder.audit_count()
 
     def event_count(self) -> int:
         """Number of audit events recorded."""

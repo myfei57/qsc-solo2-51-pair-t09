@@ -7,6 +7,7 @@ from .clock import LogicalClock
 from .config import Config
 from .console.plant import Plant
 from .console.router import Console
+from .console.subscriptions import SnapshotRegistry, SubscriptionService
 from .store.snapshot import Snapshot
 from .store.store import Store
 
@@ -19,6 +20,8 @@ class Application:
     store: Store
     clock: LogicalClock
     recorder: Recorder
+    snapshots: SnapshotRegistry
+    subscriptions: SubscriptionService
     plant: Plant
     console: Console
 
@@ -32,13 +35,24 @@ def build_application(config: Config) -> Application:
     store = Store(config.store_path())
     clock = LogicalClock()
     recorder = Recorder(store, clock)
+    snapshots = SnapshotRegistry(store)
+    subscriptions = SubscriptionService(
+        store,
+        snapshots,
+        recorder,
+        backlog_limit=config.subscription_backlog,
+        max_wait_seconds=float(config.subscription_wait_seconds),
+    )
     plant = Plant(store, clock, recorder)
-    console = Console(plant)
+    console = Console(plant, subscriptions)
+    plant.set_change_publishers(subscriptions.capture, subscriptions.fanout)
     return Application(
         config=config,
         store=store,
         clock=clock,
         recorder=recorder,
+        snapshots=snapshots,
+        subscriptions=subscriptions,
         plant=plant,
         console=console,
     )

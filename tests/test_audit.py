@@ -68,6 +68,17 @@ def test_query_reads_the_expected_rows():
     assert latest_sequence(store, "missing") == 0
 
 
+def test_audit_log_keeps_infrastructure_events_separate():
+    store = Store()
+    recorder = Recorder(store, LogicalClock())
+    recorder.log("start", "line started")
+    recorder.audit_log("snapshot.published", "snapshot 1 abc")
+    assert recorder.count() == 1
+    assert recorder.latest("snapshot.published") is None
+    assert recorder.audit_latest("snapshot.published").detail == "snapshot 1 abc"
+    assert store.get("audit/log-sequence") == 1
+
+
 def test_summary_counts_and_filters_by_kind():
     store = Store()
     recorder = Recorder(store)

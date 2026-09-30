@@ -11,6 +11,8 @@ class Config:
     host: str = "127.0.0.1"
     port: int = 8080
     data_dir: str = "data"
+    subscription_backlog: int = 256
+    subscription_wait_seconds: int = 30
 
     def listen(self) -> tuple[str, int]:
         """Address tuple handed to the HTTP server."""
@@ -27,5 +29,13 @@ def parse_args(argv: list[str] | None = None) -> Config:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--data", dest="data_dir", default="data")
+    parser.add_argument("--subscription-backlog", type=int, default=256)
+    parser.add_argument("--subscription-wait", type=int, default=30)
     namespace = parser.parse_args(argv)
-    return Config(host=namespace.host, port=namespace.port, data_dir=namespace.data_dir)
+    return Config(
+        host=namespace.host,
+        port=namespace.port,
+        data_dir=namespace.data_dir,
+        subscription_backlog=namespace.subscription_backlog,
+        subscription_wait_seconds=namespace.subscription_wait,
+    )

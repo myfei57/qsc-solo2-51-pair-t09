@@ -61,6 +61,14 @@ def test_short_rejects_a_non_positive_width():
         short("abcdef", 0)
 
 
+def test_update_writes_multiple_keys_in_one_flush(store):
+    store.update({"a": 1, "b": 2})
+    assert store.get("a") == 1
+    assert store.get("b") == 2
+    with pytest.raises(StoreError):
+        store.update({})
+
+
 def test_snapshot_reports_count_and_digest(store):
     store.put("a", 1)
     store.put("b", 2)

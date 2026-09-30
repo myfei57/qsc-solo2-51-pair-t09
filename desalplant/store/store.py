@@ -45,10 +45,23 @@ class Store:
 
     def put(self, key: str, value: Any) -> None:
         """Write a key and flush the document."""
-        if not key:
+        with self._lock:
+            self.update({key: value})
+
+    def update(self, values: dict[str, Any]) -> None:
+        """Write several keys atomically and flush the document once."""
+        if not values:
+            raise StoreError("update must contain at least one key")
+        if any(not key for key in values):
             raise StoreError("key must not be empty")
         with self._lock:
-            self._data[key] = value
+            self._data.update(values)
+            self.flush()
+
+    def delete(self, key: str) -> None:
+        """Remove one key and flush the document."""
+        with self._lock:
+            self._data.pop(key, None)
             self.flush()
 
     def get(self, key: str, default: Any = None) -> Any:
