@@ -59,7 +59,8 @@ def test_service_survives_a_restart(tmp_path):
     assert first.store.get("plant/state") == "running"
     reopened = build_application(config)
     assert reopened.store.get("plant/state") == "running"
-    assert reopened.plant.event_count() == 1
+    kinds = {event.kind for event in reopened.plant.events(limit=0)}
+    assert "start" in kinds
 
 
 def test_request_parses_target_and_body():

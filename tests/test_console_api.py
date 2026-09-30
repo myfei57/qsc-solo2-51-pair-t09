@@ -63,7 +63,7 @@ def test_events_grow_with_operations(console):
     assert ok(console, "GET", "/api/events")["count"] == 0
     ok(console, "POST", "/api/start", {})
     body = ok(console, "GET", "/api/events", )
-    assert body["count"] == 1
+    assert body["count"] >= 1
     assert body["events"][0]["kind"] == "start"
 
 

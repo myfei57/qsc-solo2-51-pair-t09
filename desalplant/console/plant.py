@@ -48,10 +48,11 @@ LAST_STAGE_READINGS = {"s3": 5.0}
 class Plant:
     """Every subsystem of the line, wired together behind the console."""
 
-    def __init__(self, store: Store, clock: LogicalClock, recorder: Recorder) -> None:
+    def __init__(self, store: Store, clock: LogicalClock, recorder: Recorder, pulse: Any = None) -> None:
         self.store = store
         self.clock = clock
         self.recorder = recorder
+        self.pulse = pulse
         self.state = PlantState.IDLE
 
         self.feed = Feed()
@@ -94,6 +95,7 @@ class Plant:
         self.state = PlantState.RUNNING
         self.store.put(keys.PLANT_STATE, self.state.value)
         self.store.put(keys.PLANT_STARTED_AT, self.clock.tick)
+        self._publish()
         return self.recorder.log("start", "line started")
 
     def produce(self) -> Event:
@@ -105,6 +107,7 @@ class Plant:
         self.product.fill(self.permeate)
         self.output.check(self.hp_pump.efficiency, PRODUCE_POWER)
         self.level.update(PRODUCE_LEVEL)
+        self._publish()
         return self.recorder.log("produce", "permeate produced")
 
     def shutdown(self) -> Event:
@@ -116,12 +119,14 @@ class Plant:
         self.state = PlantState.IDLE
         self.store.put(keys.PLANT_STATE, self.state.value)
         self.store.put(keys.PLANT_STOPPED_AT, self.clock.tick)
+        self._publish()
         return self.recorder.log("shutdown", "line stopped")
 
     def switch_tank(self) -> Event:
         """Move production to the standby tank."""
         self.clock.advance()
         active = handoff(self.tank_set, self.hp_pump)
+        self._publish()
         return self.recorder.log("switch", f"product tank switched to {active}")
 
     def maintain(self) -> Event:
@@ -139,6 +144,7 @@ class Plant:
         self.chem_tank.draw(MAINTENANCE_DRAW)
         self.rinse.run()
         self.store.put(keys.PLANT_MAINTAINED_AT, self.clock.tick)
+        self._publish()
         return self.recorder.log("maintain", "maintenance completed")
 
     def pump_differential(self) -> float:
@@ -146,6 +152,11 @@ class Plant:
         return differential(self.hp_pump, self.array, dict(LAST_STAGE_READINGS))
 
     # --------------------------------------------------------------- reading
+
+    def _publish(self) -> None:
+        """Fan out the current state to change subscribers, when wired."""
+        if self.pulse is not None:
+            self.pulse.publish()
 
     def status(self) -> dict[str, Any]:
         """Compact view of the line's current state."""

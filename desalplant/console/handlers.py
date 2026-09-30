@@ -1,5 +1,8 @@
 """Read-only console handlers."""
 
+from typing import Any
+
+from ..pulse import points as pulse_points
 from . import probes, routes
 from .http import Request, Response, json_response
 
@@ -103,6 +106,90 @@ def selftest(console, request: Request) -> Response:
 def version(console, request: Request) -> Response:
     """Build label of the running service."""
     return json_response({"label": console.plant.build().label()})
+
+
+# ------------------------------------------------------------- point data
+
+
+def _split_points(value: Any) -> list[str]:
+    """Accept a comma string or a list of point names."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    if isinstance(value, (list, tuple)):
+        return [str(part) for part in value]
+    raise ValueError("points must be a comma string or a list")
+
+
+def points_catalog(console, request: Request) -> Response:
+    """Names of every readable measurement point."""
+    return json_response({"points": list(pulse_points.available_points())})
+
+
+def data(console, request: Request) -> Response:
+    """On-demand, consistent snapshot of selected points."""
+    names = _split_points(request.param("points"))
+    return json_response(console.plant.pulse.fetch(names).to_dict())
+
+
+def subscriptions(console, request: Request) -> Response:
+    """List subscriptions, or register a new one."""
+    engine = console.plant.pulse
+    if request.method == "POST":
+        body = request.body()
+        stype = body.get("type", "change")
+        names = _split_points(body.get("points", []))
+        sub = engine.subscribe(stype, names)
+        return json_response(sub.to_dict())
+    return json_response([sub.to_dict() for sub in engine.subscriptions()])
+
+
+def subscription_detail(console, request: Request) -> Response:
+    """One subscription by id."""
+    sub = console.plant.pulse.subscription(request.path_params["subscription_id"])
+    return json_response(sub.to_dict())
+
+
+def subscription_cancel(console, request: Request) -> Response:
+    """Cancel a subscription."""
+    sub = console.plant.pulse.cancel(request.path_params["subscription_id"])
+    return json_response(sub.to_dict())
+
+
+def subscription_pull(console, request: Request) -> Response:
+    """Long-pull snapshots for a subscription, resuming after a cursor."""
+    engine = console.plant.pulse
+    after_raw = request.param("after")
+    after = int(after_raw) if after_raw is not None else None
+    wait = request.number("wait", 0.0)
+    limit_raw = request.param("limit")
+    limit = int(limit_raw) if limit_raw is not None else None
+    result = engine.pull(
+        request.path_params["subscription_id"],
+        after=after,
+        wait=wait,
+        limit=limit,
+    )
+    return json_response(result)
+
+
+def snapshot_verify(console, request: Request) -> Response:
+    """Look up the recorded checksum of a snapshot version."""
+    version = int(request.path_params["version"])
+    return json_response(console.plant.pulse.verify(version))
+
+
+PULSE_ROUTES = (
+    ("GET", routes.POINTS, points_catalog),
+    ("GET", routes.DATA, data),
+    ("GET", routes.SUBSCRIPTIONS, subscriptions),
+    ("POST", routes.SUBSCRIPTIONS, subscriptions),
+    ("GET", routes.SUBSCRIPTION, subscription_detail),
+    ("POST", routes.SUBSCRIPTION_CANCEL, subscription_cancel),
+    ("GET", routes.SUBSCRIPTION_PULL, subscription_pull),
+    ("GET", routes.SNAPSHOT, snapshot_verify),
+)
 
 
 ROUTE_TABLE = (

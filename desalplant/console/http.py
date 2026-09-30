@@ -1,7 +1,7 @@
 """Request and response types used by the console."""
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Mapping
 from urllib.parse import parse_qs, urlsplit
 
@@ -16,6 +16,7 @@ class Request:
     path: str
     query: Mapping[str, str]
     body_text: str = ""
+    path_params: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
     def parse(cls, method: str, target: str, body_text: str = "") -> "Request":

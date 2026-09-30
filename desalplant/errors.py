@@ -78,5 +78,25 @@ class UnknownKeyError(ContractError):
     """Raised when a committed value is required but the key was never written."""
 
 
+class UnknownPointError(ContractError):
+    """Raised when a point is requested that the catalog does not know."""
+
+
+class UnknownSubscriptionError(ContractError):
+    """Raised when a subscription id is not registered."""
+
+
+class UnknownSnapshotError(ContractError):
+    """Raised when a snapshot version was never issued."""
+
+
+class SubscriptionClosedError(ContractError):
+    """Raised when a cancelled subscription is used."""
+
+
+class InvalidCursorError(ContractError):
+    """Raised when a resume cursor is malformed."""
+
+
 class StoreError(ContractError):
     """Raised when the file-backed store cannot persist a write."""

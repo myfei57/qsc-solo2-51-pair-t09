@@ -7,6 +7,7 @@ from .clock import LogicalClock
 from .config import Config
 from .console.plant import Plant
 from .console.router import Console
+from .pulse import PulseEngine
 from .store.snapshot import Snapshot
 from .store.store import Store
 
@@ -21,6 +22,7 @@ class Application:
     recorder: Recorder
     plant: Plant
     console: Console
+    pulse: PulseEngine
 
     def snapshot(self) -> Snapshot:
         """Frozen view of the persisted document."""
@@ -33,6 +35,8 @@ def build_application(config: Config) -> Application:
     clock = LogicalClock()
     recorder = Recorder(store, clock)
     plant = Plant(store, clock, recorder)
+    pulse = PulseEngine(plant, store, recorder, clock)
+    plant.pulse = pulse
     console = Console(plant)
     return Application(
         config=config,
@@ -41,4 +45,5 @@ def build_application(config: Config) -> Application:
         recorder=recorder,
         plant=plant,
         console=console,
+        pulse=pulse,
     )
